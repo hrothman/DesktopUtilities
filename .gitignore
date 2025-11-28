@@ -1,5 +1,12 @@
-**/*.csv
+# Test Files
 demo/*
-moved_duplicates/*
-output_reports/*
+test_demo/*
+my_test/*
+
+# Program Outputs
+outputs/*
+test_outputs/*
+
+
+
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Test file generator for duplicate file detection script.
-Creates ~50 test files in ./demo with various scenarios:
-- Exact duplicates
-- Near-duplicate text files with slight variations
-- Different file types
-- Nested subdirectories
-- Large files
-- Version-like files (v1, v2, final, etc.)
+Structured Test File Generator for Duplicate Detection Script.
+
+This generator creates a controlled test environment where we:
+1. Define the expected duplicate structure FIRST
+2. Generate files according to that structure
+3. Validate that our detection script finds what we expect
+
+This approach makes debugging much easier and tests more reliable.
 """
 
 import os
@@ -15,7 +15,649 @@ import shutil
 import random
 import string
 import json
+import difflib
 from datetime import datetime
+from dataclasses import dataclass, field
+from typing import List, Dict, Tuple, Optional
+from pathlib import Path
+
+@dataclass
+class TestConfig:
+    """Configuration for test file generation."""
+    num_unique_files: int = 20
+    max_file_size: int = 1024 * 50  # 50KB max
+    min_file_size: int = 100        # 100 bytes min
+    max_dir_depth: int = 3          # How deep to nest directories
+    duplicate_percentage: float = 0.7      # 70% of files get duplicates
+    near_duplicate_percentage: float = 0.4  # 40% get near-duplicates
+    max_duplicates_per_file: int = 4        # Max exact copies per file
+    max_near_duplicates_per_file: int = 3   # Max similar copies per file
+    similarity_range: Tuple[float, float] = (0.8, 0.95)  # Near-duplicate similarity range
+    output_dir: str = "./demo"
+    random_seed: Optional[int] = 42  # For reproducible tests
+
+@dataclass 
+class FileSpec:
+    """Specification for a file to be created."""
+    path: str
+    content: str
+    size: int
+    file_type: str
+    hash: Optional[str] = None
+
+@dataclass
+class DuplicateGroup:
+    """Represents a group of exact duplicates."""
+    original_file: FileSpec
+    duplicates: List[FileSpec] = field(default_factory=list)
+    
+@dataclass
+class NearDuplicatePair:
+    """Represents a pair of near-duplicate files."""
+    file1: FileSpec
+    file2: FileSpec
+    expected_similarity: float
+
+@dataclass
+class TestPlan:
+    """The complete test plan - what we expect to create and find."""
+    unique_files: List[FileSpec] = field(default_factory=list)
+    duplicate_groups: List[DuplicateGroup] = field(default_factory=list) 
+    near_duplicate_pairs: List[NearDuplicatePair] = field(default_factory=list)
+    directory_structure: Dict[str, List[str]] = field(default_factory=dict)
+    
+    def get_all_files(self) -> List[FileSpec]:
+        """Get all files that should be created."""
+        all_files = []
+        
+        # Add unique files
+        all_files.extend(self.unique_files)
+        
+        # Add duplicates
+        for group in self.duplicate_groups:
+            all_files.append(group.original_file)
+            all_files.extend(group.duplicates)
+            
+        # Add near-duplicates that aren't already included
+        existing_paths = {f.path for f in all_files}
+        for pair in self.near_duplicate_pairs:
+            if pair.file1.path not in existing_paths:
+                all_files.append(pair.file1)
+            if pair.file2.path not in existing_paths:
+                all_files.append(pair.file2)
+                
+        return all_files
+
+class ContentGenerator:
+    """Generates various types of file content."""
+    
+    FILE_TYPES = {
+        '.txt': 'text/plain',
+        '.py': 'text/x-python', 
+        '.js': 'application/javascript',
+        '.html': 'text/html',
+        '.css': 'text/css',
+        '.json': 'application/json',
+        '.md': 'text/markdown',
+        '.csv': 'text/csv'
+    }
+    
+    def __init__(self, seed: Optional[int] = None):
+        if seed:
+            random.seed(seed)
+    
+    def generate_content(self, file_type: str, target_size: int) -> str:
+        """Generate content of specified type and approximate size."""
+        if file_type == '.txt':
+            return self._generate_text_content(target_size)
+        elif file_type == '.py':
+            return self._generate_python_content(target_size)
+        elif file_type == '.js':
+            return self._generate_javascript_content(target_size)
+        elif file_type == '.html':
+            return self._generate_html_content(target_size)
+        elif file_type == '.css':
+            return self._generate_css_content(target_size)
+        elif file_type == '.json':
+            return self._generate_json_content(target_size)
+        elif file_type == '.md':
+            return self._generate_markdown_content(target_size)
+        elif file_type == '.csv':
+            return self._generate_csv_content(target_size)
+        else:
+            return self._generate_text_content(target_size)
+    
+    def create_near_duplicate(self, original_content: str, target_similarity: float) -> str:
+        """Create a near-duplicate with controlled similarity."""
+        lines = original_content.split('\n')
+        num_lines_to_modify = max(1, int(len(lines) * (1 - target_similarity)))
+        
+        modified_lines = lines.copy()
+        
+        # Randomly modify some lines to achieve target similarity
+        for _ in range(num_lines_to_modify):
+            if len(modified_lines) > 1:
+                line_idx = random.randint(0, len(modified_lines) - 1)
+                original_line = modified_lines[line_idx]
+                
+                # Different modification strategies
+                if random.choice([True, False]):
+                    # Add some text
+                    modified_lines[line_idx] = original_line + " // MODIFIED"
+                else:
+                    # Change some words
+                    words = original_line.split()
+                    if words:
+                        word_idx = random.randint(0, len(words) - 1)
+                        words[word_idx] = f"CHANGED_{words[word_idx]}"
+                        modified_lines[line_idx] = " ".join(words)
+        
+        return '\n'.join(modified_lines)
+    
+    def _generate_text_content(self, target_size: int) -> str:
+        """Generate plain text content."""
+        words = ["lorem", "ipsum", "dolor", "sit", "amet", "consectetur", "adipiscing", 
+                "elit", "sed", "do", "eiusmod", "tempor", "incididunt", "ut", "labore"]
+        
+        content = []
+        current_size = 0
+        
+        while current_size < target_size:
+            line = " ".join(random.choices(words, k=random.randint(5, 15)))
+            content.append(line.capitalize() + ".")
+            current_size += len(line) + 1
+            
+        return "\n".join(content)
+    
+    def _generate_python_content(self, target_size: int) -> str:
+        """Generate Python code content."""
+        base_code = '''#!/usr/bin/env python3
+"""
+Generated test module.
+"""
+
+import os
+import sys
+from datetime import datetime
+
+class DataProcessor:
+    def __init__(self, config=None):
+        self.config = config or {}
+        self.processed_count = 0
+    
+    def process_item(self, item):
+        """Process a single data item."""
+        self.processed_count += 1
+        return f"processed_{item}_{self.processed_count}"
+    
+    def get_stats(self):
+        """Return processing statistics."""
+        return {
+            "processed_count": self.processed_count,
+            "timestamp": datetime.now().isoformat()
+        }
+
+def main():
+    processor = DataProcessor()
+    
+    # Process some test data
+    test_items = ["item_1", "item_2", "item_3"]
+    results = [processor.process_item(item) for item in test_items]
+    
+    print("Processing complete:")
+    print(f"Results: {results}")
+    print(f"Stats: {processor.get_stats()}")
+
+if __name__ == "__main__":
+    main()
+'''
+        
+        # Pad with comments if needed
+        while len(base_code) < target_size:
+            base_code += f"\n# Additional comment line {random.randint(1, 1000)}"
+            
+        return base_code
+    
+    def _generate_javascript_content(self, target_size: int) -> str:
+        """Generate JavaScript content."""
+        base_js = '''/**
+ * Generated test JavaScript module
+ */
+
+class Calculator {
+    constructor() {
+        this.history = [];
+    }
+    
+    add(a, b) {
+        const result = a + b;
+        this.history.push({operation: 'add', operands: [a, b], result});
+        return result;
+    }
+    
+    subtract(a, b) {
+        const result = a - b;
+        this.history.push({operation: 'subtract', operands: [a, b], result});
+        return result;
+    }
+    
+    getHistory() {
+        return this.history;
+    }
+    
+    clear() {
+        this.history = [];
+    }
+}
+
+// Usage example
+const calc = new Calculator();
+console.log('Addition:', calc.add(5, 3));
+console.log('Subtraction:', calc.subtract(10, 4));
+console.log('History:', calc.getHistory());
+'''
+        
+        while len(base_js) < target_size:
+            base_js += f"\n// Generated comment {random.randint(1, 1000)}"
+            
+        return base_js
+    
+    def _generate_html_content(self, target_size: int) -> str:
+        """Generate HTML content."""
+        base_html = '''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Page</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        h1 { color: #333; }
+        .content { background: #f5f5f5; padding: 20px; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Test Document</h1>
+        <div class="content">
+            <p>This is a generated test HTML document.</p>
+            <ul>
+                <li>Feature 1</li>
+                <li>Feature 2</li>
+                <li>Feature 3</li>
+            </ul>
+        </div>
+    </div>
+</body>
+</html>'''
+        
+        while len(base_html) < target_size:
+            base_html = base_html.replace('</body>', 
+                f'    <p>Additional content paragraph {random.randint(1, 1000)}.</p>\n</body>')
+            
+        return base_html
+    
+    def _generate_css_content(self, target_size: int) -> str:
+        """Generate CSS content."""
+        base_css = '''/* Generated test stylesheet */
+
+body {
+    margin: 0;
+    padding: 0;
+    font-family: Arial, sans-serif;
+    background-color: #f9f9f9;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+h1, h2, h3 {
+    color: #333;
+    margin-bottom: 1rem;
+}
+
+.card {
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+.button {
+    background: #007acc;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.button:hover {
+    background: #005999;
+}
+'''
+        
+        while len(base_css) < target_size:
+            rule_num = random.randint(1, 1000)
+            base_css += f'''
+.generated-class-{rule_num} {{
+    margin: 10px;
+    padding: 5px;
+    color: #{random.randint(100000, 999999):06x};
+}}
+'''
+            
+        return base_css
+    
+    def _generate_json_content(self, target_size: int) -> str:
+        """Generate JSON content."""
+        base_data = {
+            "name": "Test Configuration",
+            "version": "1.0.0",
+            "description": "Generated test JSON file",
+            "settings": {
+                "debug": True,
+                "timeout": 30,
+                "retry_attempts": 3
+            },
+            "features": [],
+            "metadata": {
+                "created": datetime.now().isoformat(),
+                "generator": "test_file_generator"
+            }
+        }
+        
+        # Add features to reach target size
+        feature_count = 0
+        while len(json.dumps(base_data, indent=2)) < target_size:
+            feature_count += 1
+            base_data["features"].append({
+                "id": f"feature_{feature_count}",
+                "enabled": random.choice([True, False]),
+                "config": {"value": random.randint(1, 100)}
+            })
+            
+        return json.dumps(base_data, indent=2)
+    
+    def _generate_markdown_content(self, target_size: int) -> str:
+        """Generate Markdown content."""
+        base_md = '''# Test Document
+
+This is a generated test markdown document.
+
+## Features
+
+- Feature 1: Basic functionality
+- Feature 2: Advanced options  
+- Feature 3: Integration support
+
+## Code Example
+
+```python
+def hello_world():
+    print("Hello, World!")
+    
+hello_world()
+```
+
+## Configuration
+
+| Setting | Value | Description |
+|---------|-------|-------------|
+| debug   | true  | Enable debug mode |
+| timeout | 30    | Request timeout |
+
+## Notes
+
+This document was automatically generated for testing purposes.
+'''
+        
+        while len(base_md) < target_size:
+            section_num = random.randint(1, 1000)
+            base_md += f'''
+## Section {section_num}
+
+Generated content for section {section_num}. This content is added to reach the target file size.
+
+- Point 1
+- Point 2
+- Point 3
+'''
+            
+        return base_md
+    
+    def _generate_csv_content(self, target_size: int) -> str:
+        """Generate CSV content."""
+        headers = ["id", "name", "age", "city", "salary", "department"]
+        rows = [",".join(headers)]
+        
+        cities = ["New York", "Los Angeles", "Chicago", "Houston", "Phoenix"]
+        departments = ["Engineering", "Marketing", "Sales", "HR", "Finance"]
+        
+        row_count = 1
+        while len("\n".join(rows)) < target_size:
+            row = [
+                str(row_count),
+                f"Employee_{row_count}",
+                str(random.randint(22, 65)),
+                random.choice(cities),
+                str(random.randint(40000, 120000)),
+                random.choice(departments)
+            ]
+            rows.append(",".join(row))
+            row_count += 1
+            
+        return "\n".join(rows)
+
+class TestPlanGenerator:
+    """Generates the test plan - what files should be created and their relationships."""
+    
+    def __init__(self, config: TestConfig):
+        self.config = config
+        self.content_gen = ContentGenerator(config.random_seed)
+        
+    def generate_plan(self) -> TestPlan:
+        """Generate a complete test plan."""
+        print(f"🎯 Generating test plan...")
+        print(f"   - {self.config.num_unique_files} unique files")
+        print(f"   - {self.config.duplicate_percentage:.0%} will have exact duplicates")
+        print(f"   - {self.config.near_duplicate_percentage:.0%} will have near-duplicates")
+        
+        plan = TestPlan()
+        
+        # Generate unique files first
+        unique_files = self._generate_unique_files()
+        plan.unique_files = unique_files
+        
+        # Select files for duplication
+        files_to_duplicate = random.sample(
+            unique_files, 
+            int(len(unique_files) * self.config.duplicate_percentage)
+        )
+        
+        # Create duplicate groups
+        for original_file in files_to_duplicate:
+            group = self._create_duplicate_group(original_file)
+            plan.duplicate_groups.append(group)
+        
+        # Select text files for near-duplication
+        text_files = [f for f in plan.get_all_files() 
+                     if f.file_type in ['.txt', '.py', '.js', '.html', '.css', '.md']]
+        
+        files_for_near_dup = random.sample(
+            text_files,
+            min(len(text_files), int(len(unique_files) * self.config.near_duplicate_percentage))
+        )
+        
+        # Create near-duplicate pairs
+        for original_file in files_for_near_dup:
+            pairs = self._create_near_duplicate_pairs(original_file)
+            plan.near_duplicate_pairs.extend(pairs)
+        
+        # Generate directory structure
+        plan.directory_structure = self._plan_directory_structure(plan.get_all_files())
+        
+        self._print_plan_summary(plan)
+        return plan
+        
+    def _generate_unique_files(self) -> List[FileSpec]:
+        """Generate specifications for unique files."""
+        files = []
+        file_types = list(ContentGenerator.FILE_TYPES.keys())
+        
+        for i in range(self.config.num_unique_files):
+            file_type = random.choice(file_types)
+            size = random.randint(self.config.min_file_size, self.config.max_file_size)
+            
+            # Generate content
+            content = self.content_gen.generate_content(file_type, size)
+            
+            # Create file spec
+            file_spec = FileSpec(
+                path=f"unique_file_{i:03d}{file_type}",
+                content=content,
+                size=len(content.encode('utf-8')),
+                file_type=file_type
+            )
+            
+            files.append(file_spec)
+            
+        return files
+        
+    def _create_duplicate_group(self, original_file: FileSpec) -> DuplicateGroup:
+        """Create a group of exact duplicates for a file."""
+        num_duplicates = random.randint(1, self.config.max_duplicates_per_file)
+        
+        group = DuplicateGroup(original_file=original_file)
+        
+        for i in range(num_duplicates):
+            # Create duplicate with different name but same content
+            base_name = Path(original_file.path).stem
+            extension = Path(original_file.path).suffix
+            
+            duplicate_names = [
+                f"{base_name}_copy_{i}{extension}",
+                f"{base_name}_backup{extension}",
+                f"{base_name} ({i+1}){extension}",
+                f"Copy_of_{base_name}{extension}",
+                f"{base_name.upper()}_DUP{extension}"
+            ]
+            
+            dup_name = random.choice(duplicate_names)
+            
+            duplicate = FileSpec(
+                path=dup_name,
+                content=original_file.content,  # Exact same content
+                size=original_file.size,
+                file_type=original_file.file_type
+            )
+            
+            group.duplicates.append(duplicate)
+            
+        return group
+        
+    def _create_near_duplicate_pairs(self, original_file: FileSpec) -> List[NearDuplicatePair]:
+        """Create near-duplicate pairs for a file."""
+        num_near_dups = random.randint(1, self.config.max_near_duplicates_per_file)
+        pairs = []
+        
+        base_name = Path(original_file.path).stem
+        extension = Path(original_file.path).suffix
+        
+        for i in range(num_near_dups):
+            # Generate target similarity
+            target_similarity = random.uniform(*self.config.similarity_range)
+            
+            # Create near-duplicate content
+            near_dup_content = self.content_gen.create_near_duplicate(
+                original_file.content, 
+                target_similarity
+            )
+            
+            # Create near-duplicate file spec
+            near_dup_names = [
+                f"{base_name}_v{i+2}{extension}",
+                f"{base_name}_modified{extension}", 
+                f"{base_name}_draft{extension}",
+                f"{base_name}_final{extension}",
+                f"{base_name}_updated{extension}"
+            ]
+            
+            near_dup = FileSpec(
+                path=random.choice(near_dup_names),
+                content=near_dup_content,
+                size=len(near_dup_content.encode('utf-8')),
+                file_type=original_file.file_type
+            )
+            
+            pair = NearDuplicatePair(
+                file1=original_file,
+                file2=near_dup,
+                expected_similarity=target_similarity
+            )
+            
+            pairs.append(pair)
+            
+        return pairs
+        
+    def _plan_directory_structure(self, all_files: List[FileSpec]) -> Dict[str, List[str]]:
+        """Plan which files go in which directories."""
+        structure = {"": []}  # Root directory
+        
+        # Create some subdirectories
+        subdirs = []
+        for depth in range(1, self.config.max_dir_depth + 1):
+            for i in range(random.randint(1, 3)):  # 1-3 dirs per depth level
+                if depth == 1:
+                    subdir = f"subdir_{i}"
+                else:
+                    parent = random.choice([d for d in subdirs if d.count('/') == depth-2])
+                    subdir = f"{parent}/subdir_{depth}_{i}"
+                subdirs.append(subdir)
+                structure[subdir] = []
+        
+        # Distribute files across directories
+        all_dirs = list(structure.keys())
+        
+        for file_spec in all_files:
+            # 60% chance to put in subdirectory, 40% in root
+            if random.random() < 0.6 and subdirs:
+                chosen_dir = random.choice(subdirs)
+            else:
+                chosen_dir = ""
+                
+            structure[chosen_dir].append(file_spec.path)
+            
+            # Update the file path to include directory
+            if chosen_dir:
+                file_spec.path = f"{chosen_dir}/{file_spec.path}"
+                
+        return structure
+        
+    def _print_plan_summary(self, plan: TestPlan):
+        """Print a summary of the generated plan."""
+        all_files = plan.get_all_files()
+        
+        print(f"\n📊 Test Plan Summary:")
+        print(f"   Total files to create: {len(all_files)}")
+        print(f"   Unique files: {len(plan.unique_files)}")
+        print(f"   Duplicate groups: {len(plan.duplicate_groups)}")
+        print(f"   Near-duplicate pairs: {len(plan.near_duplicate_pairs)}")
+        print(f"   Directory levels: {len([d for d in plan.directory_structure.keys() if d])}")
+        
+        # Show file type distribution
+        type_counts = {}
+        for file_spec in all_files:
+            type_counts[file_spec.file_type] = type_counts.get(file_spec.file_type, 0) + 1
+        
+        print(f"   File type distribution:")
+        for file_type, count in sorted(type_counts.items()):
+            print(f"     {file_type}: {count} files")
 
 def ensure_clean_demo():
     """Remove and recreate the demo directory."""
@@ -473,50 +1115,329 @@ Team Size: 5 developers"""
     
     return files
 
+
+class FileCreator:
+    """Creates actual files on disk according to the test plan."""
+    
+    def __init__(self, config: TestConfig):
+        self.config = config
+        
+    def create_files(self, plan: TestPlan) -> None:
+        """Create all files specified in the test plan."""
+        print(f"\n� Creating files in {self.config.output_dir}...")
+        
+        # Clean output directory
+        self._clean_output_dir()
+        
+        # Create directory structure
+        self._create_directories(plan.directory_structure)
+        
+        # Create all files
+        all_files = plan.get_all_files()
+        created_count = 0
+        
+        for file_spec in all_files:
+            try:
+                self._create_file(file_spec)
+                created_count += 1
+            except Exception as e:
+                print(f"❌ Failed to create {file_spec.path}: {e}")
+        
+        print(f"✅ Created {created_count}/{len(all_files)} files successfully")
+        
+    def _clean_output_dir(self) -> None:
+        """Remove and recreate the output directory."""
+        if os.path.exists(self.config.output_dir):
+            shutil.rmtree(self.config.output_dir)
+        os.makedirs(self.config.output_dir)
+        
+    def _create_directories(self, structure: Dict[str, List[str]]) -> None:
+        """Create the directory structure."""
+        for dir_path in structure.keys():
+            if dir_path:  # Skip root directory
+                full_path = os.path.join(self.config.output_dir, dir_path)
+                os.makedirs(full_path, exist_ok=True)
+                
+    def _create_file(self, file_spec: FileSpec) -> None:
+        """Create a single file."""
+        full_path = os.path.join(self.config.output_dir, file_spec.path)
+        
+        # Ensure parent directory exists
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        
+        # Write file content
+        with open(full_path, 'w', encoding='utf-8') as f:
+            f.write(file_spec.content)
+
+
+class TestValidator:
+    """Validates that our duplicate detection script finds what we expect."""
+    
+    def __init__(self, config: TestConfig):
+        self.config = config
+        
+    def validate_results(self, plan: TestPlan, detection_results: Dict) -> bool:
+        """Validate that detection results match our expectations."""
+        print(f"\n🔍 Validating detection results...")
+        
+        validation_passed = True
+        
+        # Validate exact duplicate groups
+        exact_validation = self._validate_exact_duplicates(plan, detection_results)
+        validation_passed = validation_passed and exact_validation
+        
+        # Validate near-duplicate pairs  
+        near_validation = self._validate_near_duplicates(plan, detection_results)
+        validation_passed = validation_passed and near_validation
+        
+        # Print overall result
+        if validation_passed:
+            print(f"🎉 All validations PASSED! Detection script is working correctly.")
+        else:
+            print(f"❌ Some validations FAILED. Check the output above for details.")
+            
+        return validation_passed
+        
+    def _validate_exact_duplicates(self, plan: TestPlan, results: Dict) -> bool:
+        """Validate exact duplicate detection."""
+        print(f"  📋 Validating exact duplicates...")
+        
+        expected_groups = len(plan.duplicate_groups)
+        found_groups = len(results) if results else 0
+        
+        if found_groups != expected_groups:
+            print(f"    ❌ Expected {expected_groups} duplicate groups, found {found_groups}")
+            return False
+            
+        # Check each expected group
+        for expected_group in plan.duplicate_groups:
+            original_path = os.path.join(self.config.output_dir, expected_group.original_file.path)
+            expected_dup_paths = {
+                os.path.join(self.config.output_dir, dup.path) 
+                for dup in expected_group.duplicates
+            }
+            
+            # Find the group in results that contains our original
+            found_group = self._find_group_containing_file(original_path, results)
+            
+            if not found_group:
+                print(f"    ❌ No group found containing original file: {original_path}")
+                return False
+                
+            # Check if all expected duplicates are found
+            found_dup_paths = {
+                dup_obj.get(list(dup_obj.keys())[0], {}).get('full_path', '')
+                for dup_obj in found_group.get('duplicates', [])
+            }
+            
+            missing_dups = expected_dup_paths - found_dup_paths
+            extra_dups = found_dup_paths - expected_dup_paths
+            
+            if missing_dups:
+                print(f"    ❌ Missing duplicates for {original_path}: {missing_dups}")
+                return False
+                
+            if extra_dups:
+                print(f"    ⚠️  Extra duplicates found for {original_path}: {extra_dups}")
+                # This might be OK depending on the test
+                
+        print(f"    ✅ Exact duplicate validation passed")
+        return True
+        
+    def _validate_near_duplicates(self, plan: TestPlan, results: Dict) -> bool:
+        """Validate near-duplicate detection."""
+        print(f"  📝 Validating near-duplicates...")
+        
+        expected_pairs = len(plan.near_duplicate_pairs)
+        
+        # Count found pairs across all groups
+        found_pairs_count = 0
+        for group in results:
+            found_pairs_count += len(group.get('near_duplicates', []))
+            
+        print(f"    Expected pairs: {expected_pairs}, Found pairs: {found_pairs_count}")
+        
+        # Check each expected pair
+        validation_passed = True
+        
+        for expected_pair in plan.near_duplicate_pairs:
+            file1_path = os.path.join(self.config.output_dir, expected_pair.file1.path)
+            file2_path = os.path.join(self.config.output_dir, expected_pair.file2.path)
+            expected_similarity = expected_pair.expected_similarity
+            
+            found_pair = self._find_near_duplicate_pair(file1_path, file2_path, results)
+            
+            if not found_pair:
+                print(f"    ❌ Near-duplicate pair not found: {file1_path} <-> {file2_path}")
+                validation_passed = False
+                continue
+                
+            found_similarity = found_pair.get('similarity_score', 0)
+            similarity_diff = abs(found_similarity - expected_similarity)
+            
+            # Allow 5% tolerance in similarity
+            if similarity_diff > 0.05:
+                print(f"    ⚠️  Similarity mismatch: expected {expected_similarity:.3f}, "
+                      f"found {found_similarity:.3f} (diff: {similarity_diff:.3f})")
+                # This is a warning, not a failure for now
+                
+        if validation_passed:
+            print(f"    ✅ Near-duplicate validation passed")
+        else:
+            print(f"    ❌ Near-duplicate validation failed")
+            
+        return validation_passed
+        
+    def _find_group_containing_file(self, file_path: str, results: Dict) -> Optional[Dict]:
+        """Find the duplicate group that contains the specified file."""
+        for group in results:
+            # Check if it's the original file
+            if group.get('original_file') == file_path:
+                return group
+                
+            # Check if it's in duplicates
+            for dup_obj in group.get('duplicates', []):
+                for dup_path, dup_data in dup_obj.items():
+                    if dup_data.get('full_path') == file_path:
+                        return group
+                        
+        return None
+        
+    def _find_near_duplicate_pair(self, file1_path: str, file2_path: str, 
+                                 results: Dict) -> Optional[Dict]:
+        """Find a near-duplicate pair in the results."""
+        for group in results:
+            for near_dup_obj in group.get('near_duplicates', []):
+                for near_path, near_data in near_dup_obj.items():
+                    group_original = group.get('original_file')
+                    
+                    # Check if this pair matches (in either direction)
+                    if ((group_original == file1_path and near_data.get('full_path') == file2_path) or
+                        (group_original == file2_path and near_data.get('full_path') == file1_path)):
+                        return near_data
+                        
+        return None
+
+
+class TestRunner:
+    """Orchestrates the entire test process."""
+    
+    def __init__(self, config: TestConfig = None):
+        self.config = config or TestConfig()
+        self.plan_generator = TestPlanGenerator(self.config)
+        self.file_creator = FileCreator(self.config) 
+        self.validator = TestValidator(self.config)
+        
+    def run_test(self) -> bool:
+        """Run the complete test process."""
+        print("🚀 Starting structured duplicate detection test...")
+        print(f"📋 Configuration:")
+        print(f"   Output directory: {self.config.output_dir}")
+        print(f"   Unique files: {self.config.num_unique_files}")
+        print(f"   Duplicate %: {self.config.duplicate_percentage:.0%}")
+        print(f"   Near-duplicate %: {self.config.near_duplicate_percentage:.0%}")
+        print(f"   Random seed: {self.config.random_seed}")
+        
+        try:
+            # Phase 1: Generate test plan
+            plan = self.plan_generator.generate_plan()
+            
+            # Phase 2: Create files
+            self.file_creator.create_files(plan)
+            
+            # Phase 3: Save the plan for later validation
+            self._save_test_plan(plan)
+            
+            print(f"\n🔍 Test files created! Now run the detection script:")
+            print(f"   python3 main.py {self.config.output_dir} --format json --find-near-text --near-text-sim 0.8")
+            print(f"\nThen run validation with:")
+            print(f"   python3 validate_test_results.py")
+            print(f"\n📁 Output structure:")
+            print(f"   test_outputs/ - Test plans and validation results")
+            print(f"   outputs/      - Duplicate detection reports")
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ Test failed with error: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+            
+    def _save_test_plan(self, plan: TestPlan) -> None:
+        """Save the test plan to a file for later validation."""
+        plan_data = {
+            "config": {
+                "num_unique_files": self.config.num_unique_files,
+                "duplicate_percentage": self.config.duplicate_percentage,
+                "near_duplicate_percentage": self.config.near_duplicate_percentage,
+                "output_dir": self.config.output_dir
+            },
+            "duplicate_groups": [
+                {
+                    "original_file": group.original_file.path,
+                    "duplicates": [dup.path for dup in group.duplicates]
+                }
+                for group in plan.duplicate_groups
+            ],
+            "near_duplicate_pairs": [
+                {
+                    "file1": pair.file1.path,
+                    "file2": pair.file2.path, 
+                    "expected_similarity": pair.expected_similarity
+                }
+                for pair in plan.near_duplicate_pairs
+            ],
+            "all_files": [
+                {
+                    "path": f.path,
+                    "size": f.size,
+                    "file_type": f.file_type
+                }
+                for f in plan.get_all_files()
+            ]
+        }
+        
+        # Create test_outputs directory
+        test_outputs_dir = "test_outputs"
+        os.makedirs(test_outputs_dir, exist_ok=True)
+        
+        plan_file = os.path.join(test_outputs_dir, "test_plan.json")
+        with open(plan_file, 'w') as f:
+            json.dump(plan_data, f, indent=2)
+            
+        print(f"� Test plan saved to {plan_file}")
+
+
 def main():
-    """Generate all test files."""
-    print("🚀 Generating test files for duplicate detection...")
+    """Main entry point."""
+    import argparse
     
-    # Clean and create demo directory
-    demo_path = ensure_clean_demo()
+    parser = argparse.ArgumentParser(description="Generate structured test files for duplicate detection")
+    parser.add_argument("--num-files", type=int, default=20, help="Number of unique files to generate")
+    parser.add_argument("--max-size", type=int, default=51200, help="Maximum file size in bytes")
+    parser.add_argument("--dup-percent", type=float, default=0.7, help="Percentage of files that get duplicates")
+    parser.add_argument("--near-percent", type=float, default=0.4, help="Percentage of files that get near-duplicates")
+    parser.add_argument("--output-dir", default="./demo", help="Output directory for test files")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducible tests")
     
-    all_files = []
+    args = parser.parse_args()
     
-    # Generate different types of test files
-    print("📝 Creating base documents and variations...")
-    base_docs = create_base_documents()
-    all_files.extend(create_document_variations(base_docs, demo_path))
+    # Create configuration
+    config = TestConfig(
+        num_unique_files=args.num_files,
+        max_file_size=args.max_size,
+        duplicate_percentage=args.dup_percent,
+        near_duplicate_percentage=args.near_percent,
+        output_dir=args.output_dir,
+        random_seed=args.seed
+    )
     
-    print("📋 Creating exact duplicates...")
-    all_files.extend(create_exact_duplicates(demo_path))
+    # Run the test
+    runner = TestRunner(config)
+    success = runner.run_test()
     
-    print("🖼️  Creating binary duplicates...")
-    all_files.extend(create_binary_duplicates(demo_path))
-    
-    print("📦 Creating large files...")
-    all_files.extend(create_large_files(demo_path))
-    
-    print("📁 Creating nested directory structure...")
-    all_files.extend(create_nested_structure(demo_path))
-    
-    print("🌐 Creating different file types...")
-    all_files.extend(create_different_file_types(demo_path))
-    
-    print("📊 Creating version-like files...")
-    all_files.extend(create_version_like_files(demo_path))
-    
-    print(f"\n✅ Generated {len(all_files)} test files in ./demo")
-    print("\nTest scenarios covered:")
-    print("  ✓ Exact duplicates with different names")
-    print("  ✓ Near-duplicate text files (versions)")
-    print("  ✓ Binary file duplicates")
-    print("  ✓ Large files for performance testing")
-    print("  ✓ Nested subdirectories")
-    print("  ✓ Multiple file types (txt, html, css, js, csv, json, md)")
-    print("  ✓ Version progression files (v1, v2, final, etc.)")
-    
-    print(f"\n🔍 Now run your duplicate detector:")
-    print(f"   python3 main.py ./demo --find-near-text --near-text-sim 0.8")
+    exit(0 if success else 1)
 
 if __name__ == "__main__":
     main()
